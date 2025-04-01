@@ -12,10 +12,6 @@ sentence_key = 'sentence1'
 saved_embeddings_path = f"/globalscratch/ucl/cental/troux/corpus/stsb/embeddings_{lang}_{set_type}_{sentence_key}.pkl"
 model_name = "Lajavaness/sentence-camembert-base"
 
-# Load the French STSB dataset and save it to the specified path
-dataset = load_dataset("stsb_multi_mt", name=lang, cache_dir=custom_path)
-
-model = SentenceTransformer(model_name)
 
 # Check if the embeddings are already generated
 if os.path.exists(saved_embeddings_path):
@@ -24,6 +20,10 @@ if os.path.exists(saved_embeddings_path):
         id2embedding = pickle.load(f)
     print(f"Loaded {len(id2embedding)} embeddings")
 else:
+    # Load the French STSB dataset and save it to the specified path
+    dataset = load_dataset("stsb_multi_mt", name=lang, cache_dir=custom_path)
+    # Load the Sentence Transformer model
+    model = SentenceTransformer(model_name)
     id2embedding = {}
     # for id, example in enumerate(dataset["train"]):
     for id, example in tqdm.tqdm(enumerate(dataset["train"]), total=len(dataset["train"])):
@@ -34,3 +34,8 @@ else:
     with open(saved_embeddings_path, "wb") as f:
         pickle.dump(id2embedding, f)
     print(f"Embeddings saved to {saved_embeddings_path}")
+
+print("Example embeddings:")
+for id, embedding in id2embedding.items():
+    print(f"ID: {id}, Embedding shape: {embedding.shape}")
+    break
