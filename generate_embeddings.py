@@ -28,7 +28,7 @@ else:
     # for id, example in enumerate(dataset["train"]):
     for id, example in tqdm.tqdm(enumerate(dataset["train"]), total=len(dataset["train"])):
         embedding = model.encode(example[sentence_key]) # sentence1 or sentence2
-        id2embedding[id] = embedding
+        id2embedding[id] = (example[sentence_key], embedding)
 
     # Save the embeddings to a file
     with open(saved_embeddings_path, "wb") as f:
@@ -36,6 +36,6 @@ else:
     print(f"Embeddings saved to {saved_embeddings_path}")
 
 print("Example embeddings:")
-for id, embedding in id2embedding.items():
-    print(f"ID: {id}, Embedding shape: {embedding.shape}")
+for id, (text, embedding) in id2embedding.items():
+    print(f"ID: {id}, Text: {text}, Embedding shape: {embedding.shape}")
     break
