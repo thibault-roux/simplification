@@ -6,7 +6,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 from transformers import GPT2LMHeadModel, GPT2Tokenizer
 
-# Image Captioning Model (Same as Before)
+# Image Captioning Model
 class ImageCaptioningModel(nn.Module):
     def __init__(self, image_embedding_dim=768, gpt_model="dbddv01/gpt2-french-small"):
         super().__init__()
@@ -14,16 +14,31 @@ class ImageCaptioningModel(nn.Module):
         self.tokenizer = GPT2Tokenizer.from_pretrained(gpt_model)
         self.image_projection = nn.Linear(image_embedding_dim, self.gpt2.config.hidden_size)
 
-    def forward(self, image_features, input_ids):
+    def forward(self, image_features, max_length=30):
         projected_features = self.image_projection(image_features).unsqueeze(1)
-        token_embeddings = self.gpt2.transformer.wte(input_ids)
-        inputs_embeds = torch.cat([projected_features, token_embeddings], dim=1)
-        outputs = self.gpt2(inputs_embeds=inputs_embeds)
-        return outputs.logits
+
+        # Start with the [BOS] token (or use eos_token for consistency)
+        input_ids = torch.full((image_features.shape[0], 1), self.tokenizer.bos_token_id, device=image_features.device, dtype=torch.long)
+
+        # Autoregressive generation
+        for _ in range(max_length):
+            token_embeddings = self.gpt2.transformer.wte(input_ids)
+            inputs_embeds = torch.cat([projected_features, token_embeddings], dim=1)
+            outputs = self.gpt2(inputs_embeds=inputs_embeds)
+            next_token = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+            input_ids = torch.cat([input_ids, next_token], dim=-1)
+
+            # Stop if all generated tokens are EOS
+            if (next_token == self.tokenizer.eos_token_id).all():
+                break
+
+        return input_ids
+
+
+
+
 
 # Function to Load Data
-
-
 def get_training_data(lang='fr', set_type='train', sentence_key='sentence1'):
     '''
     Load the training data from the saved embeddings
@@ -53,7 +68,7 @@ class CaptionDataset(Dataset):
         self.max_length = max_length
 
     def __len__(self):
-        return len(self.data)
+        return len(self.data) - 1 # DON'T FORGET TO REMOVE THE -1 AFTER EXPERIMENTING -------------------------------------------- 
 
     def __getitem__(self, idx):
         text, embedding = self.data[idx][1]  # Get caption & embedding
@@ -74,22 +89,32 @@ def train(model, dataloader, optimizer, criterion, device, epochs=5):
     for epoch in range(epochs):
         total_loss = 0
 
-        for image_features, input_ids, attention_mask in dataloader:
-            image_features, input_ids, attention_mask = image_features.to(device), input_ids.to(device), attention_mask.to(device)
+        for image_features, input_ids, _ in dataloader:  # Ignore attention_mask
+            image_features, input_ids = image_features.to(device), input_ids.to(device)
 
             optimizer.zero_grad()
-            logits = model(image_features, input_ids[:, :-1])  # Ignore last token for prediction
-            # Ensure logits and targets have the same shape
-            logits = logits[:, :input_ids.size(1)-1, :]  # Crop logits to match target length
-            loss = criterion(logits.reshape(-1, logits.size(-1)), input_ids[:, 1:].reshape(-1))
+            generated_ids = model(image_features, max_length=input_ids.size(1))  # Generate caption
 
-
+            loss = criterion(generated_ids[:, 1:].reshape(-1), input_ids[:, 1:].reshape(-1))  # Shift target for prediction
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
 
         avg_loss = total_loss / len(dataloader)
         print(f"Epoch {epoch + 1}/{epochs}, Loss: {avg_loss:.4f}")
+
+
+        # Infer on the last text of the dataset
+        text, embedding = train_data[len(train_data) - 1]
+        tokenized_text = tokenizer(text, return_tensors="pt")
+        input_ids = tokenized_text["input_ids"].to(device)
+        output = model(torch.tensor(embedding).unsqueeze(0).to(device), input_ids)
+        predicted_text = tokenizer.decode(output.argmax(-1).squeeze().tolist())
+        print(f"Predicted: {predicted_text}")
+        print(f"Actual: {text}")
+        print("--------------------")
+
+
 
 # Main Script
 if __name__ == "__main__":
@@ -106,11 +131,11 @@ if __name__ == "__main__":
 
     # Initialize Model, Optimizer & Loss
     model = ImageCaptioningModel(image_embedding_dim=768).to(device)
-    optimizer = optim.AdamW(model.parameters(), lr=5e-5)
+    optimizer = optim.AdamW(model.parameters(), lr=5e-6)
     criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id)
 
     # Train the Model
-    train(model, dataloader, optimizer, criterion, device, epochs=5)
+    train(model, dataloader, optimizer, criterion, device, epochs=200)
 
     # Save the trained model
     torch.save(model.state_dict(), "image_captioning_model.pth")
