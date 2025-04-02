@@ -1,63 +1,27 @@
-import torch
-import torch.nn as nn
-from transformers import GPT2LMHeadModel, GPT2Tokenizer
 import os
 import pickle
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, Dataset
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
 
+# Image Captioning Model (Same as Before)
 class ImageCaptioningModel(nn.Module):
     def __init__(self, image_embedding_dim=768, gpt_model="gpt2"):
         super().__init__()
-        self.gpt2 = GPT2LMHeadModel.from_pretrained(gpt_model)  
+        self.gpt2 = GPT2LMHeadModel.from_pretrained(gpt_model)
         self.tokenizer = GPT2Tokenizer.from_pretrained(gpt_model)
-
-        # Fully connected layer to project image feature into GPT hidden space
-        self.image_projection = nn.Linear(image_embedding_dim, self.gpt2.config.hidden_size)  
+        self.image_projection = nn.Linear(image_embedding_dim, self.gpt2.config.hidden_size)
 
     def forward(self, image_features, input_ids):
-        """
-        image_features: Tensor of shape (batch_size, image_embedding_dim)
-        input_ids: Tokenized input text (batch_size, sequence_length)
-        """
-        # Project image feature to GPT hidden dimension
-        projected_features = self.image_projection(image_features).unsqueeze(1)  # (batch, 1, hidden_dim)
-
-        # Get GPT token embeddings
-        token_embeddings = self.gpt2.transformer.wte(input_ids)  # (batch, seq_len, hidden_dim)
-
-        # Concatenate image embedding at the beginning of the sequence
-        inputs_embeds = torch.cat([projected_features, token_embeddings], dim=1)  
-
-        # Generate output logits
+        projected_features = self.image_projection(image_features).unsqueeze(1)
+        token_embeddings = self.gpt2.transformer.wte(input_ids)
+        inputs_embeds = torch.cat([projected_features, token_embeddings], dim=1)
         outputs = self.gpt2(inputs_embeds=inputs_embeds)
-        return outputs.logits  # (batch, seq_len + 1, vocab_size)
+        return outputs.logits
 
-    def generate_caption(self, image_features, max_length=20):
-        """
-        Generate a caption given an image feature vector.
-        """
-        image_features = torch.tensor(image_features).unsqueeze(0)  # Convert to tensor and add batch dim
-        projected_features = self.image_projection(image_features).unsqueeze(1)  # (1, 1, hidden_dim)
-
-        # Start with BOS token (GPT-2 uses "<|endoftext|>" as BOS)
-        input_ids = torch.tensor([[self.tokenizer.bos_token_id]])
-
-        # Autoregressive generation
-        for _ in range(max_length):
-            token_embeddings = self.gpt2.transformer.wte(input_ids)  # Get token embeddings
-            inputs_embeds = torch.cat([projected_features, token_embeddings], dim=1)
-
-            outputs = self.gpt2(inputs_embeds=inputs_embeds)
-            next_token_id = torch.argmax(outputs.logits[:, -1, :], dim=-1).unsqueeze(0)
-
-            # Stop if EOS token is generated
-            if next_token_id.item() == self.tokenizer.eos_token_id:
-                break
-
-            input_ids = torch.cat([input_ids, next_token_id], dim=-1)
-
-        # Decode generated token sequence
-        caption = self.tokenizer.decode(input_ids[0], skip_special_tokens=True)
-        return caption
+# Function to Load Data
 
 
 def get_training_data(lang='fr', set_type='train', sentence_key='sentence1'):
@@ -76,16 +40,70 @@ def get_training_data(lang='fr', set_type='train', sentence_key='sentence1'):
         with open(saved_embeddings_path, "rb") as f:
             id2embedding = pickle.load(f)
         print(f"Loaded {len(id2embedding)} embeddings")
+        return id2embedding
     else:
         raise FileNotFoundError(f"Embeddings not found at {saved_embeddings_path}. Run generate_embeddings.py first.")
 
 
+# Custom Dataset Class
+class CaptionDataset(Dataset):
+    def __init__(self, data, tokenizer, max_length=30):
+        self.data = list(data.items())  # Convert dict to list of tuples (id, (text, embedding))
+        self.tokenizer = tokenizer
+        self.max_length = max_length
 
-# Example Usage
-image_embedding = torch.randn(1, 768)  # Simulated 768-d vector from a CNN/ViT
-print(image_embedding)
-model = ImageCaptioningModel(image_embedding_dim=768)
+    def __len__(self):
+        return len(self.data)
 
-# Generate a caption
-caption = model.generate_caption(image_embedding.squeeze(0).tolist())
-print("Generated Caption:", caption)
+    def __getitem__(self, idx):
+        text, embedding = self.data[idx][1]  # Get caption & embedding
+        embedding_tensor = torch.tensor(embedding, dtype=torch.float32)
+
+        # Tokenize caption
+        tokenized_caption = self.tokenizer(text, max_length=self.max_length, padding="max_length", truncation=True, return_tensors="pt")
+        input_ids = tokenized_caption["input_ids"].squeeze(0)  # Remove batch dim
+        attention_mask = tokenized_caption["attention_mask"].squeeze(0)
+
+        return embedding_tensor, input_ids, attention_mask
+
+# Training Function
+def train(model, dataloader, optimizer, criterion, device, epochs=5):
+    model.train()
+    model.to(device)
+
+    for epoch in range(epochs):
+        total_loss = 0
+
+        for image_features, input_ids, attention_mask in dataloader:
+            image_features, input_ids, attention_mask = image_features.to(device), input_ids.to(device), attention_mask.to(device)
+
+            optimizer.zero_grad()
+            logits = model(image_features, input_ids[:, :-1])  # Ignore last token for prediction
+            loss = criterion(logits.view(-1, logits.size(-1)), input_ids[:, 1:].reshape(-1))  # Shift target tokens
+
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+
+        avg_loss = total_loss / len(dataloader)
+        print(f"Epoch {epoch + 1}/{epochs}, Loss: {avg_loss:.4f}")
+
+# Main Script
+if __name__ == "__main__":
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Load Data
+    train_data = get_training_data(lang='fr', set_type='train')
+    tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+
+    # Create Dataset & DataLoader
+    dataset = CaptionDataset(train_data, tokenizer)
+    dataloader = DataLoader(dataset, batch_size=16, shuffle=True)
+
+    # Initialize Model, Optimizer & Loss
+    model = ImageCaptioningModel(image_embedding_dim=768).to(device)
+    optimizer = optim.AdamW(model.parameters(), lr=5e-5)
+    criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id)
+
+    # Train the Model
+    train(model, dataloader, optimizer, criterion, device, epochs=5)
