@@ -8,7 +8,7 @@ from transformers import GPT2LMHeadModel, GPT2Tokenizer
 
 # Image Captioning Model (Same as Before)
 class ImageCaptioningModel(nn.Module):
-    def __init__(self, image_embedding_dim=768, gpt_model="gpt2"):
+    def __init__(self, image_embedding_dim=768, gpt_model="dbddv01/gpt2-french-small"):
         super().__init__()
         self.gpt2 = GPT2LMHeadModel.from_pretrained(gpt_model)
         self.tokenizer = GPT2Tokenizer.from_pretrained(gpt_model)
@@ -79,7 +79,10 @@ def train(model, dataloader, optimizer, criterion, device, epochs=5):
 
             optimizer.zero_grad()
             logits = model(image_features, input_ids[:, :-1])  # Ignore last token for prediction
-            loss = criterion(logits.view(-1, logits.size(-1)), input_ids[:, 1:].reshape(-1))  # Shift target tokens
+            # Ensure logits and targets have the same shape
+            logits = logits[:, :input_ids.size(1)-1, :]  # Crop logits to match target length
+            loss = criterion(logits.reshape(-1, logits.size(-1)), input_ids[:, 1:].reshape(-1))
+
 
             loss.backward()
             optimizer.step()
@@ -94,7 +97,8 @@ if __name__ == "__main__":
 
     # Load Data
     train_data = get_training_data(lang='fr', set_type='train')
-    tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+    tokenizer = GPT2Tokenizer.from_pretrained("dbddv01/gpt2-french-small")
+    tokenizer.pad_token = tokenizer.eos_token
 
     # Create Dataset & DataLoader
     dataset = CaptionDataset(train_data, tokenizer)
@@ -107,3 +111,7 @@ if __name__ == "__main__":
 
     # Train the Model
     train(model, dataloader, optimizer, criterion, device, epochs=5)
+
+    # Save the trained model
+    torch.save(model.state_dict(), "image_captioning_model.pth")
+    print("Model saved!")
