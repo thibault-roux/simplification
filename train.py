@@ -1,9 +1,11 @@
 import torch
 import torch.nn as nn
 from transformers import GPT2LMHeadModel, GPT2Tokenizer
+import os
+import pickle
 
 class ImageCaptioningModel(nn.Module):
-    def __init__(self, image_embedding_dim=512, gpt_model="gpt2"):
+    def __init__(self, image_embedding_dim=768, gpt_model="gpt2"):
         super().__init__()
         self.gpt2 = GPT2LMHeadModel.from_pretrained(gpt_model)  
         self.tokenizer = GPT2Tokenizer.from_pretrained(gpt_model)
@@ -58,10 +60,31 @@ class ImageCaptioningModel(nn.Module):
         return caption
 
 
+def get_training_data(lang='fr', set_type='train', sentence_key='sentence1'):
+    '''
+    Load the training data from the saved embeddings
+    Args:
+        lang: str, language of the dataset
+        set_type: str, type of the dataset (train, dev, test)
+        sentence_key: str, key of the sentence in the dataset
+    Returns:
+        id2embedding: dict, mapping of sentence ID to a tuple (text, embeddings)
+    '''
+    saved_embeddings_path = f"/globalscratch/ucl/cental/troux/corpus/stsb/embeddings_{lang}_{set_type}_{sentence_key}.pkl"
+    if os.path.exists(saved_embeddings_path):
+        print(f"Embeddings already exist at {saved_embeddings_path}. Loading...")
+        with open(saved_embeddings_path, "rb") as f:
+            id2embedding = pickle.load(f)
+        print(f"Loaded {len(id2embedding)} embeddings")
+    else:
+        raise FileNotFoundError(f"Embeddings not found at {saved_embeddings_path}. Run generate_embeddings.py first.")
+
+
+
 # Example Usage
-image_embedding = torch.randn(1, 512)  # Simulated 512-d vector from a CNN/ViT
+image_embedding = torch.randn(1, 768)  # Simulated 768-d vector from a CNN/ViT
 print(image_embedding)
-model = ImageCaptioningModel(image_embedding_dim=512)
+model = ImageCaptioningModel(image_embedding_dim=768)
 
 # Generate a caption
 caption = model.generate_caption(image_embedding.squeeze(0).tolist())
