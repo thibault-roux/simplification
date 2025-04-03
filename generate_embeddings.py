@@ -5,23 +5,28 @@ import tqdm
 import os
 
 # Define the custom download directory
-custom_path = "/globalscratch/ucl/cental/troux/corpus/stsb"
+dataset_name = "stsb_multi_mt"
+if dataset_name == "stsb_multi_mt":
+    acronym = "stsb"
+elif dataset_name == "asi/wikitext_fr":
+    acronym = "wikitext"
+custom_path = f"/globalscratch/ucl/cental/troux/corpus/{acronym}"
 lang = 'fr'
 set_type = 'train'
 sentence_key = 'sentence2'
-saved_embeddings_path = f"/globalscratch/ucl/cental/troux/corpus/stsb/embeddings_{lang}_{set_type}_{sentence_key}.pkl"
+saved_embeddings_path = f"/globalscratch/ucl/cental/troux/corpus/{acronym}/embeddings_{lang}_{set_type}_{sentence_key}.pkl"
 model_name = "Lajavaness/sentence-camembert-base"
 
 
-concat = True
+concat = False
 if concat:
     # concat sentence1 and sentence2 pkl in one pickle
-    saved_embeddings_path = f"/globalscratch/ucl/cental/troux/corpus/stsb/embeddings_{lang}_{set_type}_concat.pkl"
+    saved_embeddings_path = f"/globalscratch/ucl/cental/troux/corpus/{acronym}/embeddings_{lang}_{set_type}_concat.pkl"
     # load pickles
     key1 = "sentence1"
     key2 = "sentence2"
-    saved_embeddings_path1 = f"/globalscratch/ucl/cental/troux/corpus/stsb/embeddings_{lang}_{set_type}_{key1}.pkl"
-    saved_embeddings_path2 = f"/globalscratch/ucl/cental/troux/corpus/stsb/embeddings_{lang}_{set_type}_{key2}.pkl"
+    saved_embeddings_path1 = f"/globalscratch/ucl/cental/troux/corpus/{acronym}/embeddings_{lang}_{set_type}_{key1}.pkl"
+    saved_embeddings_path2 = f"/globalscratch/ucl/cental/troux/corpus/{acronym}/embeddings_{lang}_{set_type}_{key2}.pkl"
     if os.path.exists(saved_embeddings_path):
         print(f"Embeddings already exist at {saved_embeddings_path}. Loading...")
         exit()
@@ -63,7 +68,7 @@ if os.path.exists(saved_embeddings_path):
     print(f"Loaded {len(id2embedding)} embeddings")
 else:
     # Load the French STSB dataset and save it to the specified path
-    dataset = load_dataset("stsb_multi_mt", name=lang, cache_dir=custom_path)
+    dataset = load_dataset(dataset_name, name=lang, cache_dir=custom_path)
     # Load the Sentence Transformer model
     model = SentenceTransformer(model_name)
     id2embedding = {}
