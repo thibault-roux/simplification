@@ -8,9 +8,51 @@ import os
 custom_path = "/globalscratch/ucl/cental/troux/corpus/stsb"
 lang = 'fr'
 set_type = 'train'
-sentence_key = 'sentence1'
+sentence_key = 'sentence2'
 saved_embeddings_path = f"/globalscratch/ucl/cental/troux/corpus/stsb/embeddings_{lang}_{set_type}_{sentence_key}.pkl"
 model_name = "Lajavaness/sentence-camembert-base"
+
+
+concat = True
+if concat:
+    # concat sentence1 and sentence2 pkl in one pickle
+    saved_embeddings_path = f"/globalscratch/ucl/cental/troux/corpus/stsb/embeddings_{lang}_{set_type}_concat.pkl"
+    # load pickles
+    key1 = "sentence1"
+    key2 = "sentence2"
+    saved_embeddings_path1 = f"/globalscratch/ucl/cental/troux/corpus/stsb/embeddings_{lang}_{set_type}_{key1}.pkl"
+    saved_embeddings_path2 = f"/globalscratch/ucl/cental/troux/corpus/stsb/embeddings_{lang}_{set_type}_{key2}.pkl"
+    if os.path.exists(saved_embeddings_path):
+        print(f"Embeddings already exist at {saved_embeddings_path}. Loading...")
+        exit()
+    else:
+        if os.path.exists(saved_embeddings_path1) and os.path.exists(saved_embeddings_path2):
+            print(f"Embeddings already exist at {saved_embeddings_path1} and {saved_embeddings_path2}. Loading...")
+            with open(saved_embeddings_path1, "rb") as f:
+                id2embedding1 = pickle.load(f)
+            with open(saved_embeddings_path2, "rb") as f:
+                id2embedding2 = pickle.load(f)
+            print(f"Loaded {len(id2embedding1)} and {len(id2embedding2)} embeddings")
+            # concat
+            id2embedding = {}
+            new_id = 0
+            for id in id2embedding1.keys():
+                text1, embedding1 = id2embedding1[id]
+                text2, embedding2 = id2embedding2[id]
+                id2embedding[new_id] = text1, embedding1
+                new_id += 1
+                id2embedding[new_id] = text2, embedding2
+                new_id += 1
+            # print
+            print(f"Concatenated {len(id2embedding1)} and {len(id2embedding2)} embeddings to {len(id2embedding)}")
+            # save
+            with open(saved_embeddings_path, "wb") as f:
+                pickle.dump(id2embedding, f)
+            print(f"Embeddings saved to {saved_embeddings_path}")
+        else:
+            print(f"Embeddings not found at {saved_embeddings_path1} or {saved_embeddings_path2}. Exiting...")
+            exit()
+        exit()
 
 
 # Check if the embeddings are already generated

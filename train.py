@@ -6,33 +6,34 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 from transformers import GPT2LMHeadModel, GPT2Tokenizer
 
+
+
 # Image Captioning Model
 class ImageCaptioningModel(nn.Module):
-    def __init__(self, image_embedding_dim=768, gpt_model="dbddv01/gpt2-french-small"):
+    def __init__(self, image_embedding_dim=768, gpt_model="asi/gpt-fr-cased-base"):
         super().__init__()
         self.gpt2 = GPT2LMHeadModel.from_pretrained(gpt_model)
         self.tokenizer = GPT2Tokenizer.from_pretrained(gpt_model)
-        self.image_projection = nn.Linear(image_embedding_dim, self.gpt2.config.hidden_size)
+        self.image_projection1 = nn.Linear(image_embedding_dim, image_embedding_dim)
+        self.image_projection2 = nn.Linear(image_embedding_dim, image_embedding_dim)
+        self.image_projection3 = nn.Linear(image_embedding_dim, self.gpt2.config.hidden_size)
 
-    def forward(self, image_features, max_length=30):
-        projected_features = self.image_projection(image_features).unsqueeze(1)
+    def forward(self, image_features, input_ids=None, max_length=30):
+        projected_features = self.image_projection1(image_features).unsqueeze(1)
+        projected_features = self.image_projection2(projected_features)
+        projected_features = self.image_projection3(projected_features)
 
-        # Start with the [BOS] token (or use eos_token for consistency)
-        input_ids = torch.full((image_features.shape[0], 1), self.tokenizer.bos_token_id, device=image_features.device, dtype=torch.long)
+        if input_ids is None:  # If no input tokens, generate from scratch
+            input_ids = torch.full(
+                (image_features.shape[0], 1), self.tokenizer.bos_token_id,
+                device=image_features.device, dtype=torch.long
+            )
 
-        # Autoregressive generation
-        for _ in range(max_length):
-            token_embeddings = self.gpt2.transformer.wte(input_ids)
-            inputs_embeds = torch.cat([projected_features, token_embeddings], dim=1)
-            outputs = self.gpt2(inputs_embeds=inputs_embeds)
-            next_token = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
-            input_ids = torch.cat([input_ids, next_token], dim=-1)
+        token_embeddings = self.gpt2.transformer.wte(input_ids)
+        inputs_embeds = torch.cat([projected_features, token_embeddings], dim=1)
+        outputs = self.gpt2(inputs_embeds=inputs_embeds)  # Now returns logits
 
-            # Stop if all generated tokens are EOS
-            if (next_token == self.tokenizer.eos_token_id).all():
-                break
-
-        return input_ids
+        return outputs.logits  # Return logits instead of argmax tokens
 
 
 
@@ -93,15 +94,21 @@ def train(model, dataloader, optimizer, criterion, device, epochs=5):
             image_features, input_ids = image_features.to(device), input_ids.to(device)
 
             optimizer.zero_grad()
-            generated_ids = model(image_features, max_length=input_ids.size(1))  # Generate caption
 
-            loss = criterion(generated_ids[:, 1:].reshape(-1), input_ids[:, 1:].reshape(-1))  # Shift target for prediction
+            logits = model(image_features, input_ids[:, :-1])  # Get logits, not tokens
+
+            # Shift labels left (ignore BOS, predict next tokens)
+            seq_len = input_ids.size(1) - 1  # Expected target sequence length
+            loss = criterion(logits[:, :seq_len, :].reshape(-1, logits.size(-1)), input_ids[:, 1:].reshape(-1))
+
+
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
 
         avg_loss = total_loss / len(dataloader)
         print(f"Epoch {epoch + 1}/{epochs}, Loss: {avg_loss:.4f}")
+
 
 
         # Infer on the last text of the dataset
@@ -118,16 +125,17 @@ def train(model, dataloader, optimizer, criterion, device, epochs=5):
 
 # Main Script
 if __name__ == "__main__":
+    print("Launching...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load Data
-    train_data = get_training_data(lang='fr', set_type='train')
-    tokenizer = GPT2Tokenizer.from_pretrained("dbddv01/gpt2-french-small")
+    train_data = get_training_data(lang='fr', set_type='train', sentence_key='concat')
+    tokenizer = GPT2Tokenizer.from_pretrained("asi/gpt-fr-cased-base")
     tokenizer.pad_token = tokenizer.eos_token
 
     # Create Dataset & DataLoader
     dataset = CaptionDataset(train_data, tokenizer)
-    dataloader = DataLoader(dataset, batch_size=16, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
 
     # Initialize Model, Optimizer & Loss
     model = ImageCaptioningModel(image_embedding_dim=768).to(device)
@@ -138,5 +146,5 @@ if __name__ == "__main__":
     train(model, dataloader, optimizer, criterion, device, epochs=200)
 
     # Save the trained model
-    torch.save(model.state_dict(), "image_captioning_model.pth")
+    torch.save(model.state_dict(), "results/image_captioning_model.pth")
     print("Model saved!")
