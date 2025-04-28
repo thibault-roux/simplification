@@ -102,7 +102,7 @@ def train(model, train_dataloader, valid_dataloader, optimizer, criterion, devic
             # Load the model state
             model.load_state_dict(torch.load("results/models/emb_captioning_best_model.pth"))
             # Load the optimizer state
-            optimizer.load_state_dict(torch.load("results/emb_captioning_best_optimizer.pth"))
+            optimizer.load_state_dict(torch.load("results/models/emb_captioning_best_optimizer.pth"))
             print(f"Loaded best model with loss {best_eval_loss:.4f}")
     else:
         best_eval_loss = float("inf")
@@ -119,7 +119,8 @@ def train(model, train_dataloader, valid_dataloader, optimizer, criterion, devic
 
             optimizer.zero_grad()
 
-            logits = model(image_features, input_ids[:, :-1])  # Get logits, not tokens
+            # logits = model(image_features, input_ids[:, :-1])  # Get logits, not tokens
+
 
             # Shift labels left (ignore BOS, predict next tokens)
             seq_len = input_ids.size(1) - 1  # Expected target sequence length
@@ -137,7 +138,10 @@ def train(model, train_dataloader, valid_dataloader, optimizer, criterion, devic
         print(f"Model saved at epoch {epoch + 1}")
 
         # Evaluate the model
-        eval_loss = evaluate(model, valid_dataloader, device)
+        eval_loss, eval_wer, eval_cer = evaluate(model, valid_dataloader, device)
+        with open("results/evaluation_results.txt", "a") as f:
+            f.write(f"Epoch {epoch + 1}, Loss: {eval_loss:.4f}, WER: {eval_wer:.4f}, CER: {eval_cer:.4f}\n")
+        # Save the best model
         if eval_loss < best_eval_loss:
             best_eval_loss = eval_loss
             torch.save(model.state_dict(), "results/models/emb_captioning_best_model.pth")
@@ -147,7 +151,7 @@ def train(model, train_dataloader, valid_dataloader, optimizer, criterion, devic
             with open("results/best.txt", "a") as f:
                 f.write(f"Epoch {epoch + 1}, Loss: {best_eval_loss:.4f}\n")
         else:
-            print(f"Model not improved, current best loss: {best_eval_loss:.4f}")
+            print(f"Model not improved, current best loss: {best_eval_loss:.4f}, current loss: {eval_loss:.4f}")
 
 
         model.train()
@@ -157,6 +161,8 @@ def evaluate(model, dataloader, device):
     model.eval()
     model.to(device)
     total_loss = 0
+    wers = []
+    cers = []
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Evaluating", unit="batch"):
             image_features, input_ids, _ = batch
@@ -167,9 +173,24 @@ def evaluate(model, dataloader, device):
             loss = criterion(logits[:, :seq_len, :].reshape(-1, logits.size(-1)), input_ids[:, 1:].reshape(-1))
             total_loss += loss.item()
 
+            # Compute WER and CER
+            predicted_ids = torch.argmax(logits[:, -1, :], dim=-1)
+            predicted_captions = tokenizer.batch_decode(predicted_ids, skip_special_tokens=True)
+            ground_truth_captions = tokenizer.batch_decode(input_ids[:, 1:], skip_special_tokens=True)
+            for pred, gt in zip(predicted_captions, ground_truth_captions):
+                wer = jiwer.wer(gt, pred)
+                cer = jiwer.cer(gt, pred)
+                wers.append(wer)
+                cers.append(cer)
+    # Compute average WER and CER
+    wer_avg = sum(wers) / len(wers)
+    cer_avg = sum(cers) / len(cers)
+    print(f"Average WER: {wer_avg:.4f}")
+    print(f"Average CER: {cer_avg:.4f}")
+
     avg_loss = total_loss / len(dataloader)
     print(f"Evaluation Loss: {avg_loss:.4f}")
-    return avg_loss
+    return avg_loss, wer_avg, cer_avg
 
 
 def evaluate_best_model(model, test_data, tokenizer, device):
@@ -199,6 +220,9 @@ def evaluate_best_model(model, test_data, tokenizer, device):
 
         # Compute WER or any other evaluation metric here
         for pred, gt in zip(predicted_captions, ground_truth_captions):
+            print("Predicted:", pred)
+            print("Ground Truth:", gt)
+            print()
             wer = jiwer.wer(gt, pred)
             cer = jiwer.cer(gt, pred)
             wer_scores.append(wer)
@@ -232,15 +256,7 @@ if __name__ == "__main__":
 
     # Load Data
     train_data = get_training_data(acronym='wikitext', info_name='wikitext-72', set_type='train', sentence_key='paragraph', adder='_split', fullconcat=False)
-    print("before:", type(train_data)) # dict
-    # print first element of the dict
-    print("first element:", list(train_data.items())[0])
-    # split in train, valid and test data with train_test_split
     train_data, valid_data = train_test_split(train_data, test_size=0.2, random_state=42)
-    print("after:", type(train_data)) # list
-    # print first element of the list
-    print("first element:", train_data[0])
-
     valid_data, test_data = train_test_split(valid_data, test_size=0.1, random_state=42)
     
     tokenizer = GPT2Tokenizer.from_pretrained("asi/gpt-fr-cased-base")
@@ -260,4 +276,8 @@ if __name__ == "__main__":
     criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id)
 
     # Train the Model
-    train(model, train_data, valid_data, optimizer, criterion, device, epochs=200)
+    train(model, train_data, valid_data, optimizer, criterion, device, epochs=50)
+
+    # Evaluate the best model
+    evaluate_best_model(model, test_data, tokenizer, device)
+    print("Finished evaluation.")
