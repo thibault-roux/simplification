@@ -41,9 +41,9 @@ class ImageCaptioningModel(nn.Module):
 
 
 class ImageCaptioningModel(nn.Module):
-    def __init__(self, image_dim=768, gpt_model_name="asi/gpt-fr-cased-base"):
+    def __init__(self, image_dim=768, gpt_model_name="asi/gpt-fr-cased-small"):
         super().__init__()
-        self.image_encoder = nn.Sequential(
+        self.image_projector = nn.Sequential(
             nn.Linear(image_dim, 768),
             nn.ReLU(),
             nn.Linear(768, 768),
@@ -62,6 +62,8 @@ class ImageCaptioningModel(nn.Module):
         image_embeds = self.image_projector(image).unsqueeze(1)  # (batch, 1, hidden)
 
         if not generate:
+
+
             # Training: have ground-truth captions
             caption_embeds = self.gpt.transformer.wte(caption_tokens)
             inputs_embeds = torch.cat([image_embeds, caption_embeds], dim=1)
@@ -69,7 +71,12 @@ class ImageCaptioningModel(nn.Module):
             # Adjust attention mask
             attention_mask = torch.ones(inputs_embeds.size()[:-1], device=device)
 
+            bos_token_id = self.tokenizer.bos_token_id
+            bos_tokens = torch.full((batch_size, 1), bos_token_id, device=device)
+            caption_tokens = torch.cat([bos_tokens, caption_tokens], dim=1)
+
             outputs = self.gpt(inputs_embeds=inputs_embeds, attention_mask=attention_mask, labels=caption_tokens)
+
             return outputs.loss
         
         else:
@@ -184,7 +191,7 @@ def train(model, train_dataloader, valid_dataloader, optimizer, criterion, devic
         print(f"Model saved at epoch {epoch + 1}")
 
         # Evaluate the model
-        eval_loss, eval_wer, eval_cer = evaluate(model, valid_dataloader, device)
+        eval_loss, eval_wer, eval_cer = evaluate(model, valid_dataloader, device, epoch)
         with open("results/evaluation_results.txt", "a") as f:
             f.write(f"Epoch {epoch + 1}, Loss: {eval_loss:.4f}, WER: {eval_wer:.4f}, CER: {eval_cer:.4f}\n")
         # Save the best model
@@ -203,7 +210,7 @@ def train(model, train_dataloader, valid_dataloader, optimizer, criterion, devic
         model.train()
 
 
-def evaluate(model, dataloader, device):
+def evaluate(model, dataloader, device, epoch):
     model.eval()
     model.to(device)
     total_loss = 0
@@ -214,14 +221,13 @@ def evaluate(model, dataloader, device):
             image_features, input_ids, _ = batch
             image_features, input_ids = image_features.to(device), input_ids.to(device)
 
-            logits = model(image_features, input_ids[:, :-1])
-            seq_len = input_ids.size(1) - 1
-            loss = criterion(logits[:, :seq_len, :].reshape(-1, logits.size(-1)), input_ids[:, 1:].reshape(-1))
+            loss = model(image_features, caption_tokens=input_ids, generate=False)
+            generated_tokens = model(image_features, generate=True, max_length=100)
+            
             total_loss += loss.item()
 
             # Compute WER and CER
-            predicted_ids = torch.argmax(logits[:, -1, :], dim=-1)
-            predicted_captions = tokenizer.batch_decode(predicted_ids, skip_special_tokens=True)
+            predicted_captions = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
             ground_truth_captions = tokenizer.batch_decode(input_ids[:, 1:], skip_special_tokens=True)
             for pred, gt in zip(predicted_captions, ground_truth_captions):
                 wer = jiwer.wer(gt, pred)
@@ -234,6 +240,17 @@ def evaluate(model, dataloader, device):
     print(f"Average WER: {wer_avg:.4f}")
     print(f"Average CER: {cer_avg:.4f}")
 
+    # Save the results
+    with open("results/evaluation_results_" + str(epoch) + ".txt", "w") as f:
+        f.write(f"Average WER: {wer_avg:.4f}\n")
+        f.write(f"Average CER: {cer_avg:.4f}\n")
+    # Save the predictions
+    with open("results/predictions_" + str(epoch) + ".txt", "w") as f:
+        for pred, gt in zip(predicted_captions, ground_truth_captions):
+            f.write(f"Predicted: {pred}\n")
+            f.write(f"Ground Truth: {gt}\n")
+            f.write("\n")
+
     avg_loss = total_loss / len(dataloader)
     print(f"Evaluation Loss: {avg_loss:.4f}")
     return avg_loss, wer_avg, cer_avg
@@ -242,55 +259,9 @@ def evaluate(model, dataloader, device):
 def evaluate_best_model(model, test_data, tokenizer, device):
     # Load the best model
     model.load_state_dict(torch.load("results/models/emb_captioning_best_model.pth"))
-    model.to(device)
+    
+    evaluate(model, test_data, device, epoch="best")
 
-    # scores
-    wer_scores = []
-    cer_scores = []
-    # Set the model to evaluation mode
-    model.eval()
-
-    # Evaluate the model by computing word error rate (WER) between predictions and ground truth
-    for batch in tqdm(test_data, desc="Evaluating Best Model", unit="batch"):
-        image_features, input_ids, _ = batch
-        image_features, input_ids = image_features.to(device), input_ids.to(device)
-
-        # Generate predictions
-        with torch.no_grad():
-            logits = model(image_features, input_ids[:, :-1])
-            predicted_ids = torch.argmax(logits[:, -1, :], dim=-1)
-
-        # Decode the predicted and ground truth captions
-        predicted_captions = tokenizer.batch_decode(predicted_ids, skip_special_tokens=True)
-        ground_truth_captions = tokenizer.batch_decode(input_ids[:, 1:], skip_special_tokens=True)
-
-        # Compute WER or any other evaluation metric here
-        for pred, gt in zip(predicted_captions, ground_truth_captions):
-            print("Predicted:", pred)
-            print("Ground Truth:", gt)
-            print()
-            wer = jiwer.wer(gt, pred)
-            cer = jiwer.cer(gt, pred)
-            wer_scores.append(wer)
-            cer_scores.append(cer)
-
-    # Compute average WER and CER
-    wer_avg = sum(wer_scores) / len(wer_scores)
-    cer_avg = sum(cer_scores) / len(cer_scores)
-
-    # Print the results
-    print(f"Average WER: {wer_avg:.4f}")
-    print(f"Average CER: {cer_avg:.4f}")
-    # Save the results
-    with open("results/evaluation_results.txt", "w") as f:
-        f.write(f"Average WER: {wer_avg:.4f}\n")
-        f.write(f"Average CER: {cer_avg:.4f}\n")
-    # Save the predictions
-    with open("results/predictions.txt", "w") as f:
-        for pred, gt in zip(predicted_captions, ground_truth_captions):
-            f.write(f"Predicted: {pred}\n")
-            f.write(f"Ground Truth: {gt}\n")
-            f.write("\n")        
 
 
 
@@ -317,12 +288,12 @@ if __name__ == "__main__":
     test_data = DataLoader(test_data, batch_size=100, shuffle=False)
 
     # Initialize Model, Optimizer & Loss
-    model = ImageCaptioningModel(image_embedding_dim=768).to(device)
+    model = ImageCaptioningModel(image_dim=768).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=5e-6)
     criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id)
 
     # Train the Model
-    # train(model, train_data, valid_data, optimizer, criterion, device, epochs=50)
+    train(model, train_data, valid_data, optimizer, criterion, device, epochs=50)
 
     # Evaluate the best model
     evaluate_best_model(model, test_data, tokenizer, device)
