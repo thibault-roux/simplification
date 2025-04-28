@@ -10,6 +10,7 @@ from tqdm import tqdm
 import jiwer
 
 
+'''
 # Image Captioning Model
 class ImageCaptioningModel(nn.Module):
     def __init__(self, image_embedding_dim=768, gpt_model="asi/gpt-fr-cased-base"):
@@ -36,7 +37,58 @@ class ImageCaptioningModel(nn.Module):
         outputs = self.gpt2(inputs_embeds=inputs_embeds)  # Now returns logits
 
         return outputs.logits  # Return logits instead of argmax tokens
+'''
 
+
+class ImageCaptioningModel(nn.Module):
+    def __init__(self, image_dim=768, gpt_model_name="asi/gpt-fr-cased-base"):
+        super().__init__()
+        self.image_encoder = nn.Sequential(
+            nn.Linear(image_dim, 768),
+            nn.ReLU(),
+            nn.Linear(768, 768),
+            nn.ReLU(),
+            nn.Linear(768, 768)  # Match GPT embedding size
+        )
+        
+        self.gpt = GPT2LMHeadModel.from_pretrained(gpt_model_name)
+        self.tokenizer = GPT2Tokenizer.from_pretrained(gpt_model_name)
+        
+    def forward(self, image, caption_tokens=None, generate=False, max_length=20):
+        batch_size = image.size(0)
+        device = image.device
+
+        # Project image
+        image_embeds = self.image_projector(image).unsqueeze(1)  # (batch, 1, hidden)
+
+        if not generate:
+            # Training: have ground-truth captions
+            caption_embeds = self.gpt.transformer.wte(caption_tokens)
+            inputs_embeds = torch.cat([image_embeds, caption_embeds], dim=1)
+
+            # Adjust attention mask
+            attention_mask = torch.ones(inputs_embeds.size()[:-1], device=device)
+
+            outputs = self.gpt(inputs_embeds=inputs_embeds, attention_mask=attention_mask, labels=caption_tokens)
+            return outputs.loss
+        
+        else:
+            # Inference: no ground-truth, generate autoregressively
+            generated = []
+            inputs_embeds = image_embeds
+
+            for _ in range(max_length):
+                outputs = self.gpt(inputs_embeds=inputs_embeds)
+                next_token_logits = outputs.logits[:, -1, :]
+                next_token = next_token_logits.argmax(dim=-1)  # greedy decoding
+
+                generated.append(next_token)
+
+                next_token_embed = self.gpt.transformer.wte(next_token).unsqueeze(1)
+                inputs_embeds = torch.cat([inputs_embeds, next_token_embed], dim=1)
+
+            generated_tokens = torch.stack(generated, dim=1)  # (batch, max_length)
+            return generated_tokens
 
 
 
@@ -119,13 +171,7 @@ def train(model, train_dataloader, valid_dataloader, optimizer, criterion, devic
 
             optimizer.zero_grad()
 
-            # logits = model(image_features, input_ids[:, :-1])  # Get logits, not tokens
-
-
-            # Shift labels left (ignore BOS, predict next tokens)
-            seq_len = input_ids.size(1) - 1  # Expected target sequence length
-            loss = criterion(logits[:, :seq_len, :].reshape(-1, logits.size(-1)), input_ids[:, 1:].reshape(-1))
-
+            loss = model(image_features, caption_tokens=input_ids, generate=False)  # TRAINING MODE
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
@@ -276,7 +322,7 @@ if __name__ == "__main__":
     criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id)
 
     # Train the Model
-    train(model, train_data, valid_data, optimizer, criterion, device, epochs=50)
+    # train(model, train_data, valid_data, optimizer, criterion, device, epochs=50)
 
     # Evaluate the best model
     evaluate_best_model(model, test_data, tokenizer, device)
