@@ -159,9 +159,9 @@ def train(model, train_dataloader, valid_dataloader, optimizer, criterion, devic
             lines = f.readlines()
             best_eval_loss = float(lines[-1].split(",")[1].split(":")[1])
             # Load the model state
-            model.load_state_dict(torch.load("results/models/emb_captioning_best_model.pth"))
+            model.load_state_dict(torch.load("results/models/emb_captioning/emb_captioning_best_model.pth"))
             # Load the optimizer state
-            optimizer.load_state_dict(torch.load("results/models/emb_captioning_best_optimizer.pth"))
+            optimizer.load_state_dict(torch.load("results/models/emb_captioning/emb_captioning_best_optimizer.pth"))
             print(f"Loaded best model with loss {best_eval_loss:.4f}")
     else:
         best_eval_loss = float("inf")
@@ -187,7 +187,7 @@ def train(model, train_dataloader, valid_dataloader, optimizer, criterion, devic
         print(f"Epoch {epoch + 1}/{epochs}, Loss: {avg_loss:.4f}")
 
         # Save model
-        torch.save(model.state_dict(), f"results/models/emb_captioning_epoch_{epoch + 1}.pth")
+        torch.save(model.state_dict(), f"results/models/emb_captioning/emb_captioning_epoch_{epoch + 1}.pth")
         print(f"Model saved at epoch {epoch + 1}")
 
         # Evaluate the model
@@ -197,8 +197,8 @@ def train(model, train_dataloader, valid_dataloader, optimizer, criterion, devic
         # Save the best model
         if eval_loss < best_eval_loss:
             best_eval_loss = eval_loss
-            torch.save(model.state_dict(), "results/models/emb_captioning_best_model.pth")
-            torch.save(optimizer.state_dict(), "results/models/emb_captioning_best_optimizer.pth")
+            torch.save(model.state_dict(), "results/models/emb_captioning/emb_captioning_best_model.pth")
+            torch.save(optimizer.state_dict(), "results/models/emb_captioning/emb_captioning_best_optimizer.pth")
             print(f"Best model saved with loss {best_eval_loss:.4f}")
             # Save the best loss
             with open("results/best.txt", "a") as f:
@@ -229,6 +229,13 @@ def evaluate(model, dataloader, device, epoch):
             # Compute WER and CER
             predicted_captions = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
             ground_truth_captions = tokenizer.batch_decode(input_ids[:, 1:], skip_special_tokens=True)
+
+            # print captions
+            for i in range(len(predicted_captions)):
+                print(f"Predicted: {predicted_captions[i]}")
+                print(f"Ground Truth: {ground_truth_captions[i]}")
+                print()
+
             for pred, gt in zip(predicted_captions, ground_truth_captions):
                 wer = jiwer.wer(gt, pred)
                 cer = jiwer.cer(gt, pred)
@@ -258,34 +265,46 @@ def evaluate(model, dataloader, device, epoch):
 
 def evaluate_best_model(model, test_data, tokenizer, device):
     # Load the best model
-    model.load_state_dict(torch.load("results/models/emb_captioning_best_model.pth"))
+    model.load_state_dict(torch.load("results/models/emb_captioning/emb_captioning_best_model.pth"))
     
     evaluate(model, test_data, device, epoch="best")
 
 
 
+def get_data(tokenizer):
+    # If data file does not exist
+    if not os.path.exists("results/dataset.pkl"):
+        # Load Data
+        train_data = get_training_data(acronym='wikitext', info_name='wikitext-72', set_type='train', sentence_key='paragraph', adder='_split', fullconcat=False)
+        train_data, valid_data = train_test_split(train_data, test_size=0.1, random_state=42)
+        valid_data, test_data = train_test_split(valid_data, test_size=0.5, random_state=42)
 
+        # Create Dataset & DataLoader
+        train_data = CaptionDataset(train_data, tokenizer)
+        valid_data = CaptionDataset(valid_data, tokenizer)
+        test_data = CaptionDataset(test_data, tokenizer)
+        train_data = DataLoader(train_data, batch_size=100, shuffle=True)
+        valid_data = DataLoader(valid_data, batch_size=100, shuffle=False)
+        test_data = DataLoader(test_data, batch_size=100, shuffle=False)
+
+        # Save the data
+    else: # data file exists
+        with open("results/data.pkl", "rb") as f:
+            train_data, valid_data, test_data = pickle.load(f)
+        print("Loaded data from results/data.pkl")
+
+    return train_data, valid_data, test_data
 
 # Main Script
 if __name__ == "__main__":
     print("Launching...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Load Data
-    train_data = get_training_data(acronym='wikitext', info_name='wikitext-72', set_type='train', sentence_key='paragraph', adder='_split', fullconcat=False)
-    train_data, valid_data = train_test_split(train_data, test_size=0.2, random_state=42)
-    valid_data, test_data = train_test_split(valid_data, test_size=0.1, random_state=42)
-    
-    tokenizer = GPT2Tokenizer.from_pretrained("asi/gpt-fr-cased-base")
+    # Load Tokenizer
+    tokenizer = GPT2Tokenizer.from_pretrained("asi/gpt-fr-cased-small")
     tokenizer.pad_token = tokenizer.eos_token
 
-    # Create Dataset & DataLoader
-    train_data = CaptionDataset(train_data, tokenizer)
-    valid_data = CaptionDataset(valid_data, tokenizer)
-    test_data = CaptionDataset(test_data, tokenizer)
-    train_data = DataLoader(train_data, batch_size=100, shuffle=True)
-    valid_data = DataLoader(valid_data, batch_size=100, shuffle=False)
-    test_data = DataLoader(test_data, batch_size=100, shuffle=False)
+    train_data, valid_data, test_data = get_data(tokenizer)
 
     # Initialize Model, Optimizer & Loss
     model = ImageCaptioningModel(image_dim=768).to(device)
